@@ -1,0 +1,21 @@
+# Ambiente Python e caches locais.
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Dados e modelos gerados ficam fora do repositorio.
+resultados/
+*.csv
+*.parquet
+*.joblib
+*.pkl
+
+# Configuracoes locais e credenciais.
+.env
+.env.*
+!.env.example
+.aws/
+credentials
+*.pem
