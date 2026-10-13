@@ -4,6 +4,75 @@ Este projeto estima o tempo de ciclo de pedidos com entrega confirmada, usando d
 
 Os resultados abaixo são da execução verificada em **13/10/2026**, sobre dados históricos de **2021**. Não representam uma avaliação da operação atual.
 
+## Problema de negócio
+
+A espera pela entrega influencia a experiência do cliente e a organização das lojas. O objetivo é explorar estimativas de duração que ajudem a comunicar expectativas e investigar padrões operacionais. A proposta inicial focava tempo de preparo na cozinha; o experimento atual passou a prever **tempo de ciclo do pedido**. Esse alvo abrange um intervalo diferente e não deve ser apresentado como previsão apenas de preparo.
+
+## Arquitetura de dados e evolução do projeto
+
+A documentação original descreve uma arquitetura Medallion na AWS, com Bronze, Prata e Ouro, e ingestão orientada a eventos. Ela informa o uso de Lambda para transformar CSV em Parquet e de Glue para catalogar as tabelas. Os scripts e configurações dessas etapas não estão neste repositório; o fluxo validado aqui começa na leitura da ouro que foi criada no Athena.
+
+```mermaid
+flowchart TD
+    subgraph AWS["AWS — arquitetura de dados"]
+        A["CSV bruto — origem documentada"] --> B["S3 Bronze: delivery-bronze-p"]
+        B -->|"Evento S3 — configuração descrita"| C["Lambda: ETL"]
+        C --> D["S3 Prata: delivery-prata-p — Parquet"]
+        D -->|"Catalogação"| E["Glue Data Catalog / Crawler"]
+        D -->|"Dados consultados"| F["Athena: CTAS e junções"]
+        E -->|"Metadados"| F
+        F --> G["S3 Ouro: delivery-ouro-p/ciclo_entregas/"]
+    end
+    subgraph Local["Local — fluxo executado e avaliado"]
+        G -->|"Leitura direta com awswrangler"| H["Python / Jupyter: diagnóstico e recorte 20–120 min"]
+        H --> I["Treino temporal: HistGradientBoostingRegressor"]
+        I --> J["Avaliação contra mediana do treino"]
+        J --> K["CSV de previsões + modelo .joblib"]
+    end
+    subgraph Evolucao["Evolução proposta — não implementada neste repositório"]
+        K -.-> L["Lambda: inferência"]
+        M["Aplicação web"] -.->|"Requisição"| N["API Gateway"]
+        N -.-> L
+        L -.->|"Resposta pela API"| M
+    end
+```
+
+A engenharia de dados proposta usa serviços gerenciados e serverless; o treinamento e a análise atuais rodam localmente. Não há, nesta versão, código de API Gateway, Lambda de inferência ou aplicação web, nem evidência de um endpoint implantado.
+
+### Imagem do pipeline gerada pelo Gemini
+
+![Visão conceitual do pipeline AWS gerada pelo Gemini; diferenças para a implementação atual descritas abaixo](Gemini_Generated_Image_g6jydrg6jydrg6jy.jpg)
+
+A imagem ajuda a comunicar o encadeamento de ingestão, transformação, enriquecimento, machine learning e consumo. Ela representa uma **visão conceitual anterior**, não um registro da infraestrutura implantada. As diferenças relevantes são:
+
+| Elemento da imagem | Leitura correta para esta versão |
+| --- | --- |
+| `ouro_tempo_lojas` | A análise atual lê `ouro_ciclo_entregas`, no prefixo `ciclo_entregas/`. |
+| Python Training — Pandas/XGBoost | Pandas prepara os dados; o modelo usado é `HistGradientBoostingRegressor` do scikit-learn. XGBoost não é uma dependência do fluxo atual. |
+| Modelo `.pkl` | O artefato atual é `modelo_tempo_ciclo.joblib`, com pipeline e metadados da avaliação. |
+| Glue Crawler e Athena em caminhos paralelos de transformação | O Crawler descobre schema e registra metadados; Athena usa esses metadados para consultar a prata e gravar a ouro via CTAS. Catalogação não substitui transformação dos dados. |
+| Lambda de predição, API Gateway e dashboard web | São possibilidades de evolução. Não foram implementados ou validados neste repositório. O cliente faria requisições à API, que invocaria a inferência e retornaria a resposta. |
+| Fontes web e aplicativo | Os dados disponíveis neste projeto foram descritos como CSV bruto. A imagem não demonstra uma integração ativa de ingestão com aplicativos. |
+
+### Decisões de engenharia descritas no material original
+
+O segundo README informa tratamento de encoding `latin1`, conversão de coordenadas para valores numéricos e padronização de horários em Timestamp durante a transformação da prata. Essas práticas fazem parte da descrição da etapa de ETL, mas sua implementação precisa ser conferida nos recursos ou scripts AWS, que não foram incluídos aqui.
+
+No código local, a validação efetivamente presente inclui unicidade de pedidos, conversão numérica de atributos, tratamento de infinitos como ausências, conversão temporal e seleção do alvo. Não existe filtro geográfico por limites de latitude e longitude nesta versão.
+
+A documentação anterior mencionava custo próximo de zero no Free Tier. Não há medição de custos que sustente essa afirmação neste projeto: consumo de S3, Lambda, Glue e Athena deve ser acompanhado na conta antes de estimar custo ou retorno financeiro.
+
+## Tecnologias e estado de implementação
+
+| Etapa | Tecnologias | Estado documentado |
+| --- | --- | --- |
+| Armazenamento por camadas | Amazon S3, CSV e Parquet | Bronze descrita no material original; prata e ouro usadas na análise. |
+| ETL da bronze para a prata | AWS Lambda, pandas, awswrangler | Descrito no material original; código de implantação não incluído. |
+| Catálogo e consultas | AWS Glue / Crawler e Athena | Catálogo usado na investigação; nova ouro construída por CTAS no Athena. |
+| Análise e treinamento | Python, pandas, NumPy, Jupyter, scikit-learn | Implementado e executado. |
+| Exportação | joblib e CSV | Implementado; artefatos locais ignorados pelo Git. |
+| API e consumo web | Lambda, API Gateway, HTML/JS e hospedagem S3 | Evolução proposta, sem implantação demonstrada neste repositório. |
+
 ## Objetivo e alcance
 
 Prever `order_metric_cycle_time`, interpretado em minutos, a partir de informações disponíveis na criação do pedido. A métrica é tratada como **tempo de ciclo**, pois ainda falta confirmar formalmente sua definição no sistema de origem.
@@ -116,6 +185,18 @@ O filtro usa a duração real, conhecida somente depois do pedido. Na operação
 
 ## Como executar
 
+Para obter o código em um ambiente novo:
+
+```powershell
+git clone https://github.com/Docas32/aws-delivery-eta-prediction.git
+cd aws-delivery-eta-prediction
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install awswrangler boto3 pandas numpy scikit-learn joblib jupyter ipykernel
+```
+
+O repositório público não inclui os dados, credenciais ou modelos treinados. Executar com a fonte configurada exige acesso autorizado à conta AWS e ao bucket indicado; clonar o código não concede esse acesso.
+
 No PowerShell, a partir da pasta do projeto:
 
 ```powershell
@@ -135,16 +216,26 @@ As bibliotecas usadas incluem `awswrangler`, `boto3`, `pandas`, `numpy`, `scikit
 
 Para análise interativa, abra `analise.ipynb`, selecione o kernel do `venv` e execute as células em ordem. Ele contém diagnóstico da base completa, aplicação do filtro, análise exploratória, treino, comparação e exemplo de previsão.
 
+Se precisar registrar o ambiente como kernel e iniciar o Jupyter:
+
+```powershell
+python -m ipykernel install --user --name delivery-eta --display-name "Python (delivery-eta)"
+python -m jupyter notebook
+```
+
 ## Arquivos gerados
 
 | Arquivo | Conteúdo |
 | --- | --- |
 | `main.py` | Fluxo executável de leitura, preparação, treinamento e avaliação. |
 | `analise.ipynb` | Etapas comentadas, decisões e inspeção interativa. |
+| `Gemini_Generated_Image_g6jydrg6jydrg6jy.jpg` | Imagem conceitual do pipeline; diferenças para a execução atual documentadas acima. |
 | `resultados/previsoes_ciclo_teste.csv` | ID, criação, alvo observado, previsão e erro absoluto de cada pedido do teste. |
 | `resultados/modelo_tempo_ciclo.joblib` | Pipeline, atributos, alvo, fonte, faixa, status, corte e métricas. |
 
 O modelo salvo é o avaliado no corte temporal, sem retreinamento com o teste. Cada execução substitui os arquivos de ciclo na pasta de resultados. Artefatos antigos com `tempo_total` ou `previsoes_teste` no nome pertencem à abordagem anterior e não devem ser confundidos com esta avaliação.
+
+Este README consolida o contexto de arquitetura do arquivo local `readme_md.md` com a metodologia e os resultados verificados da análise atual. O arquivo original foi preservado localmente como referência; as instruções e métricas vigentes estão neste documento.
 
 ## Próximos passos para uma decisão de implantação
 
